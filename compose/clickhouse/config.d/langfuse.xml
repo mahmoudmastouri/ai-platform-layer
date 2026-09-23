@@ -1,0 +1,27 @@
+<clickhouse>
+    <!-- Single node, no cluster, no Keeper. Langfuse runs with CLICKHOUSE_CLUSTER_ENABLED=false. -->
+
+    <!-- Absolute server memory cap: 2.4 GiB (2576980377 B) under the container mem_limit of 3g.
+         An absolute value does not move with the RAM the server detects, unlike the default
+         ratio. The remaining 0.6 GiB is for the client-side buffers and the OS page cache
+         accounted to the cgroup. -->
+    <max_server_memory_usage>2576980377</max_server_memory_usage>
+
+    <!-- Default mark cache is 5 GiB, far more than this cap allows. -->
+    <mark_cache_size>268435456</mark_cache_size>
+
+    <!-- System log tables Langfuse never reads. They cost disk and memory on flush. -->
+    <metric_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <trace_log remove="1"/>
+    <text_log remove="1"/>
+
+    <!-- Log to the console so `docker logs` shows failures, and bound the file logs the
+         image would otherwise let grow to 10 x 1000 MB inside the container. -->
+    <logger>
+        <level>warning</level>
+        <console>1</console>
+        <size>50M</size>
+        <count>2</count>
+    </logger>
+</clickhouse>

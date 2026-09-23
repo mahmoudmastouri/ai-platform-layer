@@ -8,6 +8,43 @@ name: ai-platform-stack
 # No proxy service and no proxy labels: Traefik runs in a separate LXC (151) and
 # reaches this stack only over the published ports below.
 
+# Bounded json-file logs for the services added after the move. The two original
+# services keep their definitions unchanged.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Environment shared by langfuse-web and langfuse-worker (Langfuse v4).
+x-langfuse-env: &langfuse-env
+  NEXTAUTH_URL: ${NEXTAUTH_URL:-http://192.168.1.60:3000}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-langfuse}
+  SALT: ${SALT:?set SALT in .env}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
+  TELEMETRY_ENABLED: "false"
+  # Single node. The v4 schema defaults this to true, so it must be explicit.
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
+  REDIS_HOST: valkey
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ${REDIS_AUTH:?set REDIS_AUTH in .env}
+  # Event blobs go to the SeaweedFS S3 endpoint on the compose network, path-style.
+  # Langfuse uses the existing `platform` S3 identity (ADR-022).
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse-events
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://seaweedfs:8333
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${SEAWEEDFS_S3_ACCESS_KEY:?set SEAWEEDFS_S3_ACCESS_KEY in .env}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${SEAWEEDFS_S3_SECRET_KEY:?set SEAWEEDFS_S3_SECRET_KEY in .env}
+  # Batch export is off. Media upload is off because LANGFUSE_S3_MEDIA_UPLOAD_BUCKET
+  # is deliberately not set anywhere.
+  LANGFUSE_S3_BATCH_EXPORT_ENABLED: "false"
+
 services:
   seaweedfs:
     image: chrislusf/seaweedfs:4.41
@@ -107,7 +144,195 @@ services:
       retries: 12
       start_period: 15s
 
+  # One-shot: creates the langfuse-events bucket through the S3 API (SigV4 with curl,
+  # from the SeaweedFS image already on the host). Idempotent: an existing bucket is
+  # success. No healthcheck: a job that exits has no health, it is gated with
+  # service_completed_successfully instead.
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.41
+    container_name: ai-platform-seaweedfs-init
+    restart: "no"
+    mem_limit: 32m
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    environment:
+      S3_ENDPOINT: http://seaweedfs:8333
+      S3_REGION: us-east-1
+      S3_BUCKET: langfuse-events
+      S3_ACCESS_KEY: ${SEAWEEDFS_S3_ACCESS_KEY:?set SEAWEEDFS_S3_ACCESS_KEY in .env}
+      S3_SECRET_KEY: ${SEAWEEDFS_S3_SECRET_KEY:?set SEAWEEDFS_S3_SECRET_KEY in .env}
+    entrypoint:
+      - /bin/sh
+      - -eu
+      - -c
+      - |
+        # SHA-256 of an empty body, required by the S3 signature for HEAD and empty PUT.
+        EMPTY=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        status() {
+          curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            --aws-sigv4 "aws:amz:$${S3_REGION}:s3" --user "$${S3_ACCESS_KEY}:$${S3_SECRET_KEY}" \
+            -H "x-amz-content-sha256: $${EMPTY}" "$$@" || echo 000
+        }
+        url="$${S3_ENDPOINT}/$${S3_BUCKET}"
+        if [ "$$(status -I "$${url}")" = 200 ]; then
+          echo "bucket $${S3_BUCKET} already exists"
+          exit 0
+        fi
+        code="$$(status -X PUT "$${url}")"
+        case "$${code}" in
+          200|409) ;;
+          *) echo "create bucket $${S3_BUCKET} failed: HTTP $${code}" >&2; exit 1 ;;
+        esac
+        [ "$$(status -I "$${url}")" = 200 ] || { echo "bucket $${S3_BUCKET} not visible after create" >&2; exit 1; }
+        echo "bucket $${S3_BUCKET} created"
+    logging: *default-logging
+
+  postgres:
+    image: postgres:17.11-alpine3.24
+    container_name: ai-platform-postgres
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-langfuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-langfuse}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      # Disposable at the demo tier (ADR-022): lost when CT 210 is destroyed.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging: *default-logging
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.4.5.143
+    container_name: ai-platform-clickhouse
+    restart: unless-stopped
+    user: "101:101"
+    mem_limit: 3g
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
+    volumes:
+      # Disposable at the demo tier (ADR-022): lost when CT 210 is destroyed.
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/config.d/langfuse.xml:/etc/clickhouse-server/config.d/langfuse.xml:ro
+    healthcheck:
+      # A real authenticated query, not just the HTTP ping.
+      test: ["CMD-SHELL", 'clickhouse-client --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" --query "SELECT 1" > /dev/null']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging: *default-logging
+
+  valkey:
+    image: valkey/valkey:9.0.6-alpine3.24
+    container_name: ai-platform-valkey
+    restart: unless-stopped
+    mem_limit: 256m
+    command:
+      - valkey-server
+      - /etc/valkey/valkey.conf
+      - --requirepass
+      - ${REDIS_AUTH:?set REDIS_AUTH in .env}
+    environment:
+      REDISCLI_AUTH: ${REDIS_AUTH:?set REDIS_AUTH in .env}
+    volumes:
+      - valkey_data:/data
+      - ./valkey/valkey.conf:/etc/valkey/valkey.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    logging: *default-logging
+
+  # Runs the Postgres and ClickHouse migrations on start, then the headless init.
+  langfuse-web:
+    image: ghcr.io/langfuse/langfuse:4.41.0
+    container_name: ai-platform-langfuse-web
+    restart: unless-stopped
+    mem_limit: 1g
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      seaweedfs-init:
+        condition: service_completed_successfully
+    ports:
+      # LAN only. Traefik (LXC 151) reaches Langfuse over this port.
+      - "${BIND_ADDRESS:?set BIND_ADDRESS in .env}:${LANGFUSE_WEB_PORT:-3000}:3000"
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET in .env}
+      AUTH_DISABLE_SIGNUP: "true"
+      # Headless init of the organisation, project, API keys and first user.
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-ai-platform}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-AI Platform}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-shared}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-shared}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?set LANGFUSE_INIT_PROJECT_PUBLIC_KEY in .env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?set LANGFUSE_INIT_PROJECT_SECRET_KEY in .env}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@ai-platform.internal}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-admin}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set LANGFUSE_INIT_USER_PASSWORD in .env}
+    healthcheck:
+      # The server binds to the container hostname, so probe that, not 127.0.0.1.
+      test: ["CMD-SHELL", 'wget -q --spider "http://$$(hostname):3000/api/public/health"']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    logging: *default-logging
+
+  langfuse-worker:
+    image: ghcr.io/langfuse/langfuse-worker:4.41.0
+    container_name: ai-platform-langfuse-worker
+    restart: unless-stopped
+    mem_limit: 1g
+    depends_on:
+      # Waits for the web container so the database migrations are finished first.
+      langfuse-web:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      seaweedfs-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *langfuse-env
+    healthcheck:
+      test: ["CMD-SHELL", 'wget -q --spider "http://$$(hostname):3030/api/health"']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging: *default-logging
+
 volumes:
   seaweedfs_data:
   seaweedfs_config:
   qdrant_data:
+  # Demo tier, disposable (ADR-022): lost when CT 210 is destroyed.
+  postgres_data:
+  clickhouse_data:
+  valkey_data:

@@ -23,6 +23,15 @@ strict=0
 
 # name:generator. Generators: hex:<bytes> or prefixed:<prefix>:<bytes>
 generated=(
+  SALT:hex:32
+  ENCRYPTION_KEY:hex:32
+  NEXTAUTH_SECRET:hex:32
+  POSTGRES_PASSWORD:hex:24
+  CLICKHOUSE_PASSWORD:hex:24
+  REDIS_AUTH:hex:24
+  LANGFUSE_INIT_USER_PASSWORD:hex:16
+  LANGFUSE_INIT_PROJECT_PUBLIC_KEY:prefixed:pk-lf-:16
+  LANGFUSE_INIT_PROJECT_SECRET_KEY:prefixed:sk-lf-:16
 )
 
 hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
