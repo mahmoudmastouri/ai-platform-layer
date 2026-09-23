@@ -1,0 +1,107 @@
+# LiteLLM gateway (ADR-018). Config-file mode, no database, no logging callbacks.
+# Provider keys and the master key come from the container environment, which comes
+# from compose/.env. Nothing secret is in this file.
+#
+# Model groups clients call:
+#   generator                 Anthropic haiku, then OpenAI small, then OpenRouter (fallbacks below)
+#   judge                     one OpenAI chat model, deliberately NO fallback
+#   embedder                  OpenAI text-embedding-3-small, 1536 dimensions
+#   generator-fault-timeout   primary is the fault stub (hangs), same chain as generator
+#   generator-fault-5xx       primary is the fault stub (503), same chain as generator
+#
+# generator-fallback-openai and generator-fallback-openrouter are the fallback
+# targets. They are separate groups on purpose: LiteLLM fallbacks move between model
+# groups, and separate groups make each fallback deployment callable on its own for
+# acceptance tests. They are not meant for application traffic.
+#
+# Prices are USD per million tokens (input / output), checked 2026-09-24.
+
+model_list:
+  # $1.00 / $5.00. Active. Anthropic's tentative retirement date is "not sooner than
+  # 2026-10-15", with at least 60 days notice before retirement (ADR-018).
+  - model_name: generator
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+      timeout: 30
+
+  # $0.10 / $0.50. The cheapest current OpenAI small chat model. gpt-5-nano and
+  # gpt-5-mini are scheduled for shutdown on 2026-12-11. LiteLLM 1.102.1 has no price
+  # entry for this model yet, so the prices are set explicitly for cost headers.
+  - model_name: generator-fallback-openai
+    litellm_params:
+      model: openai/gpt-6-luna
+      api_key: os.environ/OPENAI_API_KEY
+      timeout: 30
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000005
+
+  # $0.10 / $0.32. Open weights, non-reasoning, served by many OpenRouter providers.
+  - model_name: generator-fallback-openrouter
+    litellm_params:
+      model: openrouter/meta-llama/llama-3.3-70b-instruct
+      api_key: os.environ/OPENROUTER_API_KEY
+      timeout: 45
+
+  # $0.75 / $4.50. A reasoning model: give callers room in max_completion_tokens.
+  - model_name: judge
+    litellm_params:
+      model: openai/gpt-5.4-mini
+      api_key: os.environ/OPENAI_API_KEY
+      timeout: 90
+
+  # $0.02 input. 1536 dimensions.
+  - model_name: embedder
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+      timeout: 15
+
+  # Fault injection. The stub only runs under the compose profile `faults`; without
+  # it these groups fail to connect and fall back the same way.
+  - model_name: generator-fault-timeout
+    litellm_params:
+      model: openai/fault-stub
+      api_base: http://fault-stub:8080/timeout
+      api_key: stub
+      timeout: 5
+
+  - model_name: generator-fault-5xx
+    litellm_params:
+      model: openai/fault-stub
+      api_base: http://fault-stub:8080/5xx
+      api_key: stub
+      timeout: 5
+
+router_settings:
+  num_retries: 1
+  allowed_fails: 3
+  cooldown_time: 60
+  routing_strategy: simple-shuffle
+  fallbacks:
+    - generator:
+        - generator-fallback-openai
+        - generator-fallback-openrouter
+    # The stub replaces only the primary. Everything after it is the generator chain.
+    - generator-fault-timeout:
+        - generator
+        - generator-fallback-openai
+        - generator-fallback-openrouter
+    - generator-fault-5xx:
+        - generator
+        - generator-fallback-openai
+        - generator-fallback-openrouter
+  # judge has no entry on purpose: a silent switch of judge model changes score
+  # distributions, and the only alternative in reach is Anthropic.
+
+litellm_settings:
+  # Drop parameters a provider does not support instead of failing, so one request
+  # shape works across Anthropic, OpenAI reasoning models and OpenRouter.
+  drop_params: true
+  telemetry: false
+  success_callback: []
+  failure_callback: []
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

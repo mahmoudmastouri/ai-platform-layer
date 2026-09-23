@@ -32,6 +32,7 @@ generated=(
   LANGFUSE_INIT_USER_PASSWORD:hex:16
   LANGFUSE_INIT_PROJECT_PUBLIC_KEY:prefixed:pk-lf-:16
   LANGFUSE_INIT_PROJECT_SECRET_KEY:prefixed:sk-lf-:16
+  LITELLM_MASTER_KEY:prefixed:sk-:32
 )
 
 hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }

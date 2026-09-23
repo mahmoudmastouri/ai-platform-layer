@@ -24,9 +24,26 @@ ADR-025). Default network: `ai-platform-stack_default`.
 | `postgres` | `postgres:17.11-alpine3.24` | none | 512m |
 | `valkey` | `valkey/valkey:9.0.6-alpine3.24` | none | 256m |
 | `seaweedfs-init` | `chrislusf/seaweedfs:4.41` (one-shot) | none | 32m |
+| `litellm` | `ghcr.io/berriai/litellm:v1.102.1@sha256:87f34979...ce20d02` | `${BIND_ADDRESS}:4000` gateway | 768m |
+| `fault-stub` | `python:3.13.15-slim` (profile `faults` only) | none | 64m |
 
-Everything not published stays on the compose network. Later stages add the LiteLLM
-gateway to this table.
+Everything not published stays on the compose network. There is no reverse proxy here:
+Traefik (LXC 151) routes to the published ports.
+
+### LiteLLM gateway
+
+Config-file mode, no database, no logging callbacks, admin UI disabled, telemetry off,
+master key auth. Client-facing model groups are `generator`, `judge`, `embedder`,
+`generator-fault-timeout` and `generator-fault-5xx`; the two `generator-fallback-*`
+groups are the fallback targets and also appear in `/v1/models`. Fallback order,
+timeouts, prices and the reasons are in `compose/litellm/config.yaml` and ADR-018.
+Fallbacks are visible only in response headers (`x-litellm-model-group`,
+`x-litellm-attempted-fallbacks`). The image digest was verified with cosign; do not
+change the tag without verifying the new digest.
+
+Fault tests: `docker compose --profile faults up -d fault-stub`, then call
+`generator-fault-5xx` and `generator-fault-timeout`. Stop the stub afterwards with
+`docker compose --profile faults stop fault-stub`.
 
 ### Langfuse
 
@@ -54,11 +71,18 @@ deploy itself. Ingress is the Traefik LXC (151); no proxy or route is defined he
 
 ```
 compose/docker-compose.yml
-compose/clickhouse/config.d/langfuse.xml
-compose/valkey/valkey.conf
+compose/.env.example                           read by scripts/gen-secrets.sh
+compose/clickhouse/config.d/langfuse.xml       bind-mounted into clickhouse
+compose/valkey/valkey.conf                     bind-mounted into valkey
+compose/litellm/config.yaml                    bind-mounted into litellm
 compose/seaweedfs/s3.identities.example.json   reference only, not read by any container
 scripts/gen-secrets.sh                         run on the host to fill compose/.env
+scripts/snapshot-state.sh                      optional, pre and post deploy state diff
+scripts/acceptance.sh                          optional, post-deploy checks
 ```
+
+The three bind-mounted config files must stay world-readable (mode 644). The
+containers run as their own users and a 600 file is unreadable to them.
 
 `compose/.env` is not in the repo. It must exist on the host, mode 600, and it is
 where every secret lives.
@@ -78,17 +102,45 @@ The running containers hold data, so the first deploy adopts them:
 The containers are recreated once, because `mem_limit` was added. The volumes are
 reused.
 
+## Acceptance
+
+Before the deploy: `docker compose config` validates, `scripts/check-mem-budget.sh`
+passes, `git ls-files` shows no `.env` and no secrets, and the running SeaweedFS and
+Qdrant match the rendered config. Take a baseline with
+`ssh root@192.168.1.60 'bash -s' < scripts/snapshot-state.sh > before.txt`.
+
+After the deploy: `ssh root@192.168.1.60 'bash -s -- full' < scripts/acceptance.sh`
+(`full` needs the stub running), then repeat `snapshot-state.sh` and diff. Run the
+`stats` phase again after five minutes idle for the memory record.
+
 ## Memory
 
 CT 210 has 8 GiB and no swap (ADR-024). Every service has a `mem_limit`, and the
 sum stays at or under 7 GiB. `scripts/check-mem-budget.sh` prints the table and
 fails if the sum is over budget or any service is uncapped.
 
+| Service | mem_limit (MiB) | Basis |
+|---|---|---|
+| clickhouse | 3072 | given; server cap 2576980377 B inside it |
+| langfuse-web | 1024 | given |
+| langfuse-worker | 1024 | given |
+| litellm | 768 | estimate, at most 1g allowed |
+| valkey | 256 | given; `maxmemory 200mb` inside it |
+| postgres | 512 | given |
+| seaweedfs | 224 | measured 78 MiB idle |
+| qdrant | 128 | measured 40 MiB idle |
+| fault-stub | 64 | given, profile only |
+| seaweedfs-init | 32 | one-shot |
+| **Total** | **7104** | budget 7168, spare 64 |
+
+The measured rows are idle numbers from before Langfuse and the gateway existed. The
+post-deploy `stats` phase replaces every estimate with a measurement.
+
 ## Repo layout
 
 ```
 compose/     docker-compose.yml, per-service config, .env.example
 docs/adr/    decisions
-scripts/     gen-secrets.sh, check-mem-budget.sh
+scripts/     gen-secrets.sh, check-mem-budget.sh, snapshot-state.sh, acceptance.sh
 CLAUDE.md    rules for sessions working in this repo
 ```
