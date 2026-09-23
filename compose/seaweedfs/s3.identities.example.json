@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "Reference only. This file is NOT read by any container and contains no",
+    "credentials. It documents the shape of the SeaweedFS S3 identity file that",
+    "the seaweedfs service generates at start-up from .env into",
+    "/etc/seaweedfs/s3.json (the seaweedfs_config named volume). The generator is",
+    "the entrypoint in docker-compose.yml; change it there, not here.",
+    "Note the absence of an 'anonymous' identity: unauthenticated S3 requests are",
+    "rejected with 403."
+  ],
+  "identities": [
+    {
+      "name": "platform",
+      "credentials": [
+        {
+          "accessKey": "${SEAWEEDFS_S3_ACCESS_KEY}",
+          "secretKey": "${SEAWEEDFS_S3_SECRET_KEY}"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

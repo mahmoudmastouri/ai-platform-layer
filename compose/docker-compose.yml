@@ -1,0 +1,113 @@
+# AI platform layer for CT 210 (ai-platform-01).
+#
+# `name:` is pinned to the legacy value from ai-platform-stack so that the running
+# containers, named volumes (<name>_<volume>) and network (<name>_default) are
+# adopted in place instead of recreated empty. Never change it (ADR-025).
+name: ai-platform-stack
+
+# No proxy service and no proxy labels: Traefik runs in a separate LXC (151) and
+# reaches this stack only over the published ports below.
+
+services:
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.41
+    container_name: ai-platform-seaweedfs
+    restart: unless-stopped
+    # Measured 78 MiB idle (docker stats, 124 MB of data). ~3x headroom.
+    mem_limit: 224m
+    # The S3 identity file carries the credentials, so it is generated at start-up
+    # from .env into a named volume. Nothing secret is ever committed or baked in.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        : "$${SEAWEEDFS_S3_ACCESS_KEY:?must be set in .env}"
+        : "$${SEAWEEDFS_S3_SECRET_KEY:?must be set in .env}"
+        mkdir -p /etc/seaweedfs
+        umask 077
+        cat > /etc/seaweedfs/s3.json <<JSON
+        {
+          "identities": [
+            {
+              "name": "platform",
+              "credentials": [
+                {
+                  "accessKey": "$${SEAWEEDFS_S3_ACCESS_KEY}",
+                  "secretKey": "$${SEAWEEDFS_S3_SECRET_KEY}"
+                }
+              ],
+              "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+            }
+          ]
+        }
+        JSON
+        exec weed server \
+          -dir=/data \
+          -ip=seaweedfs \
+          -ip.bind=0.0.0.0 \
+          -master.defaultReplication=000 \
+          -master.volumeSizeLimitMB=$${SEAWEEDFS_VOLUME_SIZE_LIMIT_MB} \
+          -volume.max=$${SEAWEEDFS_VOLUME_MAX} \
+          -filer \
+          -s3 \
+          -s3.port=8333 \
+          -s3.config=/etc/seaweedfs/s3.json
+    environment:
+      SEAWEEDFS_S3_ACCESS_KEY: ${SEAWEEDFS_S3_ACCESS_KEY:?set SEAWEEDFS_S3_ACCESS_KEY in .env}
+      SEAWEEDFS_S3_SECRET_KEY: ${SEAWEEDFS_S3_SECRET_KEY:?set SEAWEEDFS_S3_SECRET_KEY in .env}
+      SEAWEEDFS_VOLUME_SIZE_LIMIT_MB: ${SEAWEEDFS_VOLUME_SIZE_LIMIT_MB:-1024}
+      SEAWEEDFS_VOLUME_MAX: ${SEAWEEDFS_VOLUME_MAX:-32}
+    ports:
+      # Only the S3 API is published. Master (9333), volume (8080) and filer (8888)
+      # stay on the compose network.
+      - "${BIND_ADDRESS}:${SEAWEEDFS_S3_PORT}:8333"
+    volumes:
+      - seaweedfs_data:/data
+      - seaweedfs_config:/etc/seaweedfs
+    healthcheck:
+      # Real cluster health from the master, plus the S3 gateway actually serving.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS http://127.0.0.1:9333/cluster/healthz > /dev/null &&
+          curl -fsS http://127.0.0.1:8333/status > /dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    container_name: ai-platform-qdrant
+    restart: unless-stopped
+    # Measured 40 MiB idle (empty storage). ~3x headroom; raise only by freeing budget elsewhere.
+    mem_limit: 128m
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?set QDRANT_API_KEY in .env}
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__TELEMETRY_DISABLED: "true"
+    ports:
+      # REST only. The gRPC port (6334) stays unpublished.
+      - "${BIND_ADDRESS}:${QDRANT_REST_PORT}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      # The image ships no curl/wget, so the probe speaks HTTP over bash's /dev/tcp.
+      # /readyz is exempt from API-key auth, so no credential is needed here.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/6333 &&
+          printf 'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '200 OK' <&3
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  seaweedfs_data:
+  seaweedfs_config:
+  qdrant_data:

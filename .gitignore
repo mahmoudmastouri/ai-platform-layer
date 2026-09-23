@@ -1,0 +1,15 @@
+# Secrets. Never commit.
+.env
+*.env
+!.env.example
+secrets/
+*.pem
+*.key
+
+# Local and container state
+volumes/
+*.log
+
+# Editor / OS noise
+.DS_Store
+*.swp
