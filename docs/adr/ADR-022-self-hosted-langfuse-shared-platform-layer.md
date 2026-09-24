@@ -30,12 +30,12 @@ Chose Option B. Images are pinned to `langfuse/langfuse` and `langfuse/langfuse-
 
 | Service | mem_limit | Inner cap |
 |---|---|---|
-| clickhouse | 3g | `max_server_memory_usage` = 2576980377 B (2.4 GiB), absolute |
-| langfuse-web | 1g | none |
-| langfuse-worker | 1g | none |
+| clickhouse | 2560m | `max_server_memory_usage` = 2147483648 B (2 GiB), absolute |
+| langfuse-web | 2g | `NODE_OPTIONS=--max-old-space-size=1536` |
+| langfuse-worker | 1g | `NODE_OPTIONS=--max-old-space-size=768` |
 | postgres | 512m | none |
 | valkey | 256m | `maxmemory 200mb`, `noeviction` |
-| Total | 5.75 GiB | budget 6 GiB |
+| Total | 6.25 GiB | Langfuse tier only; the whole layer is 7616 MiB against CT 210's 8192 MiB |
 
 Media upload and batch export are off, `TELEMETRY_ENABLED` is false, ClickHouse cluster mode is off, and the org, project, API keys and first user are created from `.env` at first boot. `postgres_data` and `clickhouse_data` are named volumes that are lost when CT 210 is destroyed, and traces are declared disposable at the demo tier.
 
@@ -44,7 +44,9 @@ Media upload and batch export are off, `TELEMETRY_ENABLED` is false, ClickHouse 
 
 **SeaweedFS for blobs.** Langfuse writes every incoming event to S3 before it queues it, so an S3 API is mandatory, and SeaweedFS is already running with one. Its licence and maintenance status are settled in ADR-002. With media upload and batch export off, event blobs are the only S3 traffic, and a bucket on the existing store costs no extra container and no extra memory. The Langfuse event upload variables point at `http://seaweedfs:8333` on the compose network, path-style.
 
-**Below the recommendation, with explicit caps.** The 16 GiB figure is sized for production ingest volume. This tier is a demo with one project and one operator. ADR-024 fixed CT 210 at 8 GiB because a larger CT puts VM 200 in the path of the host OOM killer, so the recommendation cannot be met, and the ADR itself names this cost. With swap 0, an unbounded service can exhaust the CT, so each service gets a `mem_limit` and a container that overruns is killed alone by its cgroup instead of taking the CT with it. ClickHouse gets an absolute `max_server_memory_usage` rather than a ratio, because the default ratio scales with whatever RAM the server detects and an absolute number does not move. The caps sum to 5.75 GiB, which leaves 2.25 GiB of the CT for SeaweedFS, Qdrant, the LiteLLM gateway and the OS. Measured idle memory for each service is to be recorded here from the acceptance run before this ADR moves to Accepted.
+**Below the recommendation, with explicit caps.** The 16 GiB figure is sized for production ingest volume. This tier is a demo with one project and one operator. ADR-024 fixed CT 210 at 8 GiB because a larger CT puts VM 200 in the path of the host OOM killer, so the recommendation cannot be met, and the ADR itself names this cost. With swap 0, an unbounded service can exhaust the CT, so each service gets a `mem_limit` and a container that overruns is killed alone by its cgroup instead of taking the CT with it. ClickHouse gets an absolute `max_server_memory_usage` rather than a ratio, because the default ratio scales with whatever RAM the server detects and an absolute number does not move. The first sizing gave langfuse-web 1g with no heap setting, and it crash-looped 14 times during initialisation with `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory` at about 512 MB of heap, after the migrations had completed. The fix is 2g with `NODE_OPTIONS=--max-old-space-size=1536`, which sets the Node heap explicitly and leaves 512 MiB of the container for everything else. The worker keeps 1g with an explicit 768 MiB heap. ClickHouse pays for the extra 1 GiB: `max_server_memory_usage` drops from 2.4 GiB to 2 GiB (2147483648 B) and its `mem_limit` from 3g to 2560m.
+
+The constraint is CT 210's 8 GiB cgroup. That limit is what protects the host from these services, and the per-service limits only allocate within it and decide which container is killed first. The Langfuse tier now sums to 6.25 GiB. With SeaweedFS, Qdrant, the gateway, its fault stub and the bucket-init job, the whole layer sums to 7616 MiB, which leaves 576 MiB of the CT for the Docker daemon, sshd and the kernel. Limits are ceilings, not concurrent use, so that is a budget and not a guarantee. These values come from a failure and a budget, not from a measurement. Measured idle and peak memory for each service is to be recorded here from the acceptance run before this ADR moves to Accepted.
 
 **Traces as disposable.** ADR-016 says its own design is wrong the moment a byte lands on the stack that cannot be regenerated. Traces are that byte. This ADR does not pretend otherwise. It narrows the premise instead: everything the stack needs in order to function is reproducible, and traces are observational data outside that claim. Nothing in this repository reads a trace back, so losing them costs debugging history and no functionality. Backing them up would add a backup job, a restore path and a retention question to a tier whose value is that it rebuilds from `.env` alone, and none of the data yet justifies that.
 
@@ -77,7 +79,7 @@ Reopen when any of the following occurs:
 ## Implementation notes (ai-platform-layer, 2026-09-24)
 These record where this repo differs from, or completes, the text above. The master copy has not been changed.
 
-- **SeaweedFS and Qdrant now have a `mem_limit`.** The consequence above that says they have none is closed in this repo: `seaweedfs` 224m (78 MiB measured idle, 124 MB of data) and `qdrant` 128m (40 MiB measured idle, empty storage). The whole layer, with the gateway, its fault stub and the bucket-init job, sums to 7104 MiB against the 7168 MiB budget, so those two caps are tight by construction.
+- **SeaweedFS and Qdrant now have a `mem_limit`.** The consequence above that says they have none is closed in this repo: `seaweedfs` 224m (78 MiB measured idle, 124 MB of data) and `qdrant` 128m (40 MiB measured idle, empty storage). The whole layer, with the gateway, its fault stub and the bucket-init job, now sums to 7616 MiB against CT 210's 8192 MiB (see the Decision table and Reasoning, which carry the langfuse-web heap fix), so those two caps are tight by construction.
 - **A fourth named volume, `valkey_data`.** Valkey runs with an append-only file so queued jobs survive a restart. Without a declared volume the image would create an anonymous one on every recreate. It is disposable like the other two.
 - **Bucket creation is a one-shot `seaweedfs-init` service** that signs an S3 request with curl from the SeaweedFS image already on the host, so no new image and no MinIO client is involved. It carries no healthcheck because it exits; Langfuse waits on `service_completed_successfully`.
 - **Secrets.** `scripts/gen-secrets.sh` generates `SALT`, `ENCRYPTION_KEY`, `NEXTAUTH_SECRET`, the Postgres, ClickHouse and Valkey passwords, the initial user password and the project key pair into `compose/.env` without overwriting existing values. If Terraform generates them instead, as the Consequences describe, it must write the same variable names.

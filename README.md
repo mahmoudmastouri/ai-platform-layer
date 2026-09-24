@@ -18,9 +18,9 @@ ADR-025). Default network: `ai-platform-stack_default`.
 |---|---|---|---|
 | `seaweedfs` | `chrislusf/seaweedfs:4.41` | `${BIND_ADDRESS}:8333` S3 API | 224m |
 | `qdrant` | `qdrant/qdrant:v1.19.0` | `${BIND_ADDRESS}:6333` REST | 128m |
-| `langfuse-web` | `ghcr.io/langfuse/langfuse:4.41.0` | `${BIND_ADDRESS}:3000` UI and API | 1g |
+| `langfuse-web` | `ghcr.io/langfuse/langfuse:4.41.0` | `${BIND_ADDRESS}:3000` UI and API | 2g |
 | `langfuse-worker` | `ghcr.io/langfuse/langfuse-worker:4.41.0` | none | 1g |
-| `clickhouse` | `clickhouse/clickhouse-server:26.4.5.143` | none | 3g |
+| `clickhouse` | `clickhouse/clickhouse-server:26.4.5.143` | none | 2560m |
 | `postgres` | `postgres:17.11-alpine3.24` | none | 512m |
 | `valkey` | `valkey/valkey:9.0.6-alpine3.24` | none | 256m |
 | `seaweedfs-init` | `chrislusf/seaweedfs:4.41` (one-shot) | none | 32m |
@@ -53,7 +53,7 @@ The organisation, project, API keys and first user are created from `compose/.en
 on first boot. Event blobs are written to the `langfuse-events` bucket in SeaweedFS
 (`http://seaweedfs:8333`, path-style), created by `seaweedfs-init`. Media upload and
 batch export are disabled. `langfuse-web` runs the database migrations, so the worker
-waits for it. ClickHouse is capped by `max_server_memory_usage` (2576980377 bytes) in
+waits for it. ClickHouse is capped by `max_server_memory_usage` (2147483648 bytes) in
 `compose/clickhouse/config.d/langfuse.xml`. Valkey is capped at `maxmemory 200mb` with
 `noeviction` in `compose/valkey/valkey.conf`.
 
@@ -117,14 +117,16 @@ After the deploy: `ssh root@192.168.1.60 'bash -s -- full' < scripts/acceptance.
 ## Memory
 
 CT 210 has 8 GiB and no swap (ADR-024). Every service has a `mem_limit`, and the
-sum stays at or under 7 GiB. `scripts/check-mem-budget.sh` prints the table and
-fails if the sum is over budget or any service is uncapped.
+sum stays at or under 8 GiB. That figure is the CT's own cgroup limit, and the
+cgroup is what protects the host; per-service limits only allocate within it and
+decide which container is killed first. `scripts/check-mem-budget.sh` prints the
+table and fails if the sum is over budget or any service is uncapped.
 
 | Service | mem_limit (MiB) | Basis |
 |---|---|---|
-| clickhouse | 3072 | given; server cap 2576980377 B inside it |
-| langfuse-web | 1024 | given |
-| langfuse-worker | 1024 | given |
+| clickhouse | 2560 | server cap 2147483648 B (2 GiB) inside it; lowered from 3072 to pay for langfuse-web |
+| langfuse-web | 2048 | `NODE_OPTIONS=--max-old-space-size=1536`; crash-looped on heap at 1024 |
+| langfuse-worker | 1024 | `NODE_OPTIONS=--max-old-space-size=768` |
 | litellm | 768 | estimate, at most 1g allowed |
 | valkey | 256 | given; `maxmemory 200mb` inside it |
 | postgres | 512 | given |
@@ -132,7 +134,7 @@ fails if the sum is over budget or any service is uncapped.
 | qdrant | 128 | measured 40 MiB idle |
 | fault-stub | 64 | given, profile only |
 | seaweedfs-init | 32 | one-shot |
-| **Total** | **7104** | budget 7168, spare 64 |
+| **Total** | **7616** | budget 8192, spare 576 |
 
 The measured rows are idle numbers from before Langfuse and the gateway existed. The
 post-deploy `stats` phase replaces every estimate with a measurement.

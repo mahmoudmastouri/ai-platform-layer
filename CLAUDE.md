@@ -20,7 +20,8 @@ Read `README.md` first. Decisions live in `docs/adr/`.
   (ADR-002). SeaweedFS is the object store.
 - **No Kubernetes files until a cluster exists.**
 - **Every service has `mem_limit`, and the sum of all `mem_limit` values stays at or
-  under 7 GiB** (ADR-024). Count profile services and one-shot init services.
+  under 8 GiB**, CT 210's cgroup limit (ADR-024). Count profile services and one-shot
+  init services.
   Check with `scripts/check-mem-budget.sh` before every commit that touches compose.
 - **Secrets only in `compose/.env`.** It is gitignored and never committed. Nothing
   secret goes into a tracked file, an image, a log line or an ADR.
