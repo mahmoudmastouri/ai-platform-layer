@@ -27,6 +27,11 @@ ADR-025). Default network: `ai-platform-stack_default`.
 | `litellm` | `ghcr.io/berriai/litellm:v1.102.1@sha256:87f34979...ce20d02` | `${BIND_ADDRESS}:4000` gateway | 768m |
 | `fault-stub` | `python:3.13.15-slim` (profile `faults` only) | none | 64m |
 
+Every non-secret variable has a compose default, so `compose/.env` needs only the
+secrets: `BIND_ADDRESS` defaults to `192.168.1.60`, the SeaweedFS S3 port to 8333, the
+Qdrant port to 6333, Langfuse to 3000 and the gateway to 4000. A default has no effect
+when the variable is set, so the moved SeaweedFS and Qdrant definitions behave as before.
+
 Everything not published stays on the compose network. There is no reverse proxy here:
 Traefik (LXC 151) routes to the published ports.
 

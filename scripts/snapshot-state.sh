@@ -19,7 +19,7 @@ env_file="${ENV_FILE:-/opt/ai-platform-stack/.env}"
 [ -r "$env_file" ] || { echo "cannot read $env_file" >&2; exit 1; }
 
 get() { grep -E "^$1=" "$env_file" | tail -n 1 | cut -d= -f2-; }
-bind="$(get BIND_ADDRESS)"
+bind="$(get BIND_ADDRESS)"; bind="${bind:-192.168.1.60}"
 qport="$(get QDRANT_REST_PORT)"; qport="${qport:-6333}"
 sport="$(get SEAWEEDFS_S3_PORT)"; sport="${sport:-8333}"
 qkey="$(get QDRANT_API_KEY)"

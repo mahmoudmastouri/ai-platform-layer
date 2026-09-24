@@ -36,7 +36,7 @@ while IFS= read -r line; do
   case "$line" in [A-Za-z_]*=*) export "${line%%=*}=${line#*=}" ;; esac
 done < "$env_file"
 
-bind="$BIND_ADDRESS"
+bind="${BIND_ADDRESS:-192.168.1.60}"
 lf="http://$bind:${LANGFUSE_WEB_PORT:-3000}"
 gw="http://$bind:${LITELLM_PORT:-4000}"
 s3="http://$bind:${SEAWEEDFS_S3_PORT:-8333}"

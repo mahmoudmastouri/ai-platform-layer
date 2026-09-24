@@ -97,7 +97,7 @@ services:
     ports:
       # Only the S3 API is published. Master (9333), volume (8080) and filer (8888)
       # stay on the compose network.
-      - "${BIND_ADDRESS}:${SEAWEEDFS_S3_PORT}:8333"
+      - "${BIND_ADDRESS:-192.168.1.60}:${SEAWEEDFS_S3_PORT:-8333}:8333"
     volumes:
       - seaweedfs_data:/data
       - seaweedfs_config:/etc/seaweedfs
@@ -126,7 +126,7 @@ services:
       QDRANT__TELEMETRY_DISABLED: "true"
     ports:
       # REST only. The gRPC port (6334) stays unpublished.
-      - "${BIND_ADDRESS}:${QDRANT_REST_PORT}:6333"
+      - "${BIND_ADDRESS:-192.168.1.60}:${QDRANT_REST_PORT:-6333}:6333"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -282,7 +282,7 @@ services:
         condition: service_completed_successfully
     ports:
       # LAN only. Traefik (LXC 151) reaches Langfuse over this port.
-      - "${BIND_ADDRESS:?set BIND_ADDRESS in .env}:${LANGFUSE_WEB_PORT:-3000}:3000"
+      - "${BIND_ADDRESS:-192.168.1.60}:${LANGFUSE_WEB_PORT:-3000}:3000"
     environment:
       <<: *langfuse-env
       # Old-space heap in MiB, leaving 512 MiB of the 2g for the rest of the process.
@@ -369,7 +369,7 @@ services:
       LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS: "True"
     ports:
       # LAN only. Master key auth on every route except the health probes.
-      - "${BIND_ADDRESS:?set BIND_ADDRESS in .env}:${LITELLM_PORT:-4000}:4000"
+      - "${BIND_ADDRESS:-192.168.1.60}:${LITELLM_PORT:-4000}:4000"
     volumes:
       - ./litellm/config.yaml:/etc/litellm/config.yaml:ro
     healthcheck:
