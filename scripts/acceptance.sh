@@ -116,7 +116,7 @@ check_gateway() {
   code="$(curl -sS -o "$tmp/b" -w '%{http_code}' -H "Authorization: Bearer $LITELLM_MASTER_KEY" "$gw/v1/models")"
   local ids missing=""
   ids="$(grep -o '"id":"[^"]*"' "$tmp/b" | sed 's/"id":"//;s/"$//' | sort | tr '\n' ' ')"
-  for g in generator judge embedder generator-fault-timeout generator-fault-5xx generator-fallback-openai generator-fallback-openrouter; do
+  for g in generator judge embedder generator-fault-timeout generator-fault-5xx generator-fallback-openai; do
     case " $ids" in *" $g "*) ;; *) missing="$missing $g" ;; esac
   done
   if [ "$code" = 200 ] && [ -z "$missing" ]; then pass "GET /v1/models with key lists all groups: $ids"; else fail "models HTTP $code, missing:$missing (got: $ids)"; fi
@@ -133,11 +133,9 @@ check_gateway() {
   dims="$(grep -o '"embedding":\[[^]]*\]' "$tmp/b" | head -n 1 | sed 's/"embedding":\[//;s/\]//' | tr ',' '\n' | grep -c .)"
   if [ "$code" = 200 ] && [ "$dims" = 1536 ]; then pass "embedder: 200, $dims dimensions, cost \$$cost"; else fail "embedder: HTTP $code, dims=$dims"; fi
 
-  # Each deployment behind the fallback chain and the judge, called directly once.
-  for g in generator-fallback-openai generator-fallback-openrouter; do
-    chat "$g"
-    if [ "$code" = 200 ]; then pass "$g: 200, ${secs}s, cost \$$cost"; else fail "$g: HTTP $code $(head -c 300 "$tmp/b")"; fi
-  done
+  # The fallback deployment and the judge, called directly once.
+  chat generator-fallback-openai
+  if [ "$code" = 200 ]; then pass "generator-fallback-openai: 200, ${secs}s, cost \$$cost"; else fail "generator-fallback-openai: HTTP $code $(head -c 300 "$tmp/b")"; fi
   chat judge max_completion_tokens 200
   if [ "$code" = 200 ]; then pass "judge: 200, ${secs}s, cost \$$cost"; else fail "judge: HTTP $code $(head -c 300 "$tmp/b")"; fi
 }

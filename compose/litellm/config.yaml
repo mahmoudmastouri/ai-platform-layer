@@ -3,16 +3,18 @@
 # from compose/.env. Nothing secret is in this file.
 #
 # Model groups clients call:
-#   generator                 Anthropic haiku, then OpenAI small, then OpenRouter (fallbacks below)
+#   generator                 Anthropic haiku, then OpenAI small (fallbacks below)
 #   judge                     one OpenAI chat model, deliberately NO fallback
 #   embedder                  OpenAI text-embedding-3-small, 1536 dimensions
 #   generator-fault-timeout   primary is the fault stub (hangs), same chain as generator
 #   generator-fault-5xx       primary is the fault stub (503), same chain as generator
 #
-# generator-fallback-openai and generator-fallback-openrouter are the fallback
-# targets. They are separate groups on purpose: LiteLLM fallbacks move between model
-# groups, and separate groups make each fallback deployment callable on its own for
-# acceptance tests. They are not meant for application traffic.
+# generator-fallback-openai is the fallback target. It is a separate group on purpose:
+# LiteLLM fallbacks move between model groups, and a separate group makes the fallback
+# deployment callable on its own for acceptance tests. It is not meant for application
+# traffic.
+#
+# OpenRouter is deferred as a third provider until the Jev step (box L11). See ADR-018.
 #
 # Prices are USD per million tokens (input / output), checked 2026-09-24.
 
@@ -36,13 +38,6 @@ model_list:
     model_info:
       input_cost_per_token: 0.0000001
       output_cost_per_token: 0.0000005
-
-  # $0.10 / $0.32. Open weights, non-reasoning, served by many OpenRouter providers.
-  - model_name: generator-fallback-openrouter
-    litellm_params:
-      model: openrouter/meta-llama/llama-3.3-70b-instruct
-      api_key: os.environ/OPENROUTER_API_KEY
-      timeout: 45
 
   # $0.75 / $4.50. A reasoning model: give callers room in max_completion_tokens.
   - model_name: judge
@@ -82,22 +77,19 @@ router_settings:
   fallbacks:
     - generator:
         - generator-fallback-openai
-        - generator-fallback-openrouter
     # The stub replaces only the primary. Everything after it is the generator chain.
     - generator-fault-timeout:
         - generator
         - generator-fallback-openai
-        - generator-fallback-openrouter
     - generator-fault-5xx:
         - generator
         - generator-fallback-openai
-        - generator-fallback-openrouter
   # judge has no entry on purpose: a silent switch of judge model changes score
   # distributions, and the only alternative in reach is Anthropic.
 
 litellm_settings:
   # Drop parameters a provider does not support instead of failing, so one request
-  # shape works across Anthropic, OpenAI reasoning models and OpenRouter.
+  # shape works across Anthropic and OpenAI reasoning models.
   drop_params: true
   telemetry: false
   success_callback: []

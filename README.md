@@ -34,8 +34,9 @@ Traefik (LXC 151) routes to the published ports.
 
 Config-file mode, no database, no logging callbacks, admin UI disabled, telemetry off,
 master key auth. Client-facing model groups are `generator`, `judge`, `embedder`,
-`generator-fault-timeout` and `generator-fault-5xx`; the two `generator-fallback-*`
-groups are the fallback targets and also appear in `/v1/models`. Fallback order,
+`generator-fault-timeout` and `generator-fault-5xx`; `generator-fallback-openai`
+is the fallback target and also appears in `/v1/models`. The chain has two providers today
+(Anthropic, then OpenAI); OpenRouter is deferred to box L11 (Jev step). Fallback order,
 timeouts, prices and the reasons are in `compose/litellm/config.yaml` and ADR-018.
 Fallbacks are visible only in response headers (`x-litellm-model-group`,
 `x-litellm-attempted-fallbacks`). The image digest was verified with cosign; do not
