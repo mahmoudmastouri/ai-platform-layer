@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Sum every mem_limit in the rendered compose config, profiles included, and fail
-# if the total is over 8 GiB, the CT 210 cgroup limit (ADR-024), or any service has
-# no mem_limit. The CT limit is what protects the host; per-service limits only
-# allocate within it.
+# if the total is over 14 GiB or any service has no mem_limit. CT 210 has 16 GiB
+# (ADR-026); the other 2 GiB is left for the Docker daemon, sshd and the kernel.
 #
 #   scripts/check-mem-budget.sh [env-file]
 #
@@ -12,7 +11,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 env_file="${1:-$root/compose/.env}"
-budget=$((8 * 1024 * 1024 * 1024))
+budget=$((14 * 1024 * 1024 * 1024))
 
 json="$(docker compose -f "$root/compose/docker-compose.yml" --env-file "$env_file" --profile '*' config --format json)"
 
@@ -31,6 +30,6 @@ printf '%-20s %10s\n' SPARE "$(((budget - total) / 1048576))"
 
 status=0
 if [ -n "$nolimit" ]; then echo "FAIL: no mem_limit on: $nolimit" >&2; status=1; fi
-if [ "$total" -gt "$budget" ]; then echo "FAIL: total is over 8 GiB" >&2; status=1; fi
-[ "$status" -eq 0 ] && echo "OK: within 8 GiB, every service capped"
+if [ "$total" -gt "$budget" ]; then echo "FAIL: total is over 14 GiB" >&2; status=1; fi
+[ "$status" -eq 0 ] && echo "OK: within 14 GiB, every service capped"
 exit "$status"

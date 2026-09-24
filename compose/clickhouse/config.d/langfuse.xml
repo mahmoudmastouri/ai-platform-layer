@@ -1,11 +1,11 @@
 <clickhouse>
     <!-- Single node, no cluster, no Keeper. Langfuse runs with CLICKHOUSE_CLUSTER_ENABLED=false. -->
 
-    <!-- Absolute server memory cap: 2 GiB (2147483648 B) under the container mem_limit of 2560m.
+    <!-- Absolute server memory cap: 2.4 GiB (2576980377 B) under the container mem_limit of 3g.
          An absolute value does not move with the RAM the server detects, unlike the default
-         ratio. The remaining 0.5 GiB is for the client-side buffers and the OS page cache
-         accounted to the cgroup. Lowered from 2.4 GiB to pay for langfuse-web's heap (ADR-022). -->
-    <max_server_memory_usage>2147483648</max_server_memory_usage>
+         ratio. The remaining 0.6 GiB is for the client-side buffers and the OS page cache
+         accounted to the cgroup. -->
+    <max_server_memory_usage>2576980377</max_server_memory_usage>
 
     <!-- Default mark cache is 5 GiB, far more than this cap allows. -->
     <mark_cache_size>268435456</mark_cache_size>

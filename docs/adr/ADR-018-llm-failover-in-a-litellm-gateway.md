@@ -59,7 +59,7 @@ Router settings are `num_retries: 1`, `allowed_fails: 3`, `cooldown_time: 60`, a
 - **No database, so no per-application keys, budgets or spend history.** Every caller shares one master key. Cost is available per response from `x-litellm-response-cost` and nowhere else.
 - **`drop_params` is on.** A parameter a provider does not support is dropped without an error, which lets one request shape cross providers and also hides a parameter that had no effect.
 - **The gpt-6-luna deployment is the least verified.** It first appeared on OpenRouter's list on 22 September 2026, LiteLLM 1.102.1 has no entry for it, and its parameter handling is untested here. The acceptance run calls it directly. `openai/gpt-5.6-luna`, which is in LiteLLM's price table at $0.20 in and $1.20 out, is the replacement to try if that call fails.
-- **The 768m cap is an estimate, not a measurement.** The layer's caps sum to 7104 MiB of the 7168 MiB budget, so there is 64 MiB to give back if the gateway needs more.
+- **The 768m cap is an estimate, not a measurement.** The layer's caps sum to 9536 MiB of the 14336 MiB budget (CT 210's 16 GiB less 2 GiB for the Docker daemon, sshd and the kernel), which leaves 4800 MiB to raise the gateway cap from if it needs more.
 - **The chain has two providers.** If Anthropic and OpenAI are both down or both fail a request, `generator` fails. The OpenRouter tertiary that would cover that is deferred to box L11.
 - **The fault groups are in the production config** and appear in `/v1/models`. They are harmless without the stub, since they fail to connect and fall back the same way.
 
