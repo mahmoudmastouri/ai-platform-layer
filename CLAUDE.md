@@ -39,4 +39,4 @@ Read `README.md` first. Decisions live in `docs/adr/`.
 - Deployment is done by the operator through Terraform after a push. Sessions may
   inspect the host read-only over SSH, and may not change it.
 - Do not modify `ai-platform-stack`. It is no longer the platform source for CT 210.
-- One commit per stage of work, then push.
+- Commit, never push. The owner pushes.

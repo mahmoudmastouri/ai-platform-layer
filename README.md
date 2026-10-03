@@ -24,7 +24,7 @@ ADR-025). Default network: `ai-platform-stack_default`.
 | `postgres` | `postgres:17.11-alpine3.24` | none | 512m |
 | `valkey` | `valkey/valkey:9.0.6-alpine3.24` | none | 256m |
 | `seaweedfs-init` | `chrislusf/seaweedfs:4.41` (one-shot) | none | 32m |
-| `litellm` | `ghcr.io/berriai/litellm:v1.102.1@sha256:87f34979...ce20d02` | `${BIND_ADDRESS}:4000` gateway | 768m |
+| `litellm` | `ghcr.io/berriai/litellm:v1.102.1@sha256:87f34979...ce20d02` | `${BIND_ADDRESS}:4000` gateway | 1024m |
 | `fault-stub` | `python:3.13.15-slim` (profile `faults` only) | none | 64m |
 
 Every non-secret variable has a compose default, so `compose/.env` needs only the
@@ -132,14 +132,14 @@ over budget or any service is uncapped.
 | clickhouse | 3072 | server cap 2576980377 B (2.4 GiB) inside it |
 | langfuse-web | 2048 | `NODE_OPTIONS=--max-old-space-size=1536`; crash-looped on heap at 1024 |
 | langfuse-worker | 1536 | `NODE_OPTIONS=--max-old-space-size=1024` |
-| litellm | 768 | estimate, at most 1g allowed |
+| litellm | 1024 | measured 490 MiB of 768 MiB idle on 2026-10-03 (64%), no traffic |
 | valkey | 256 | given; `maxmemory 200mb` inside it |
 | postgres | 512 | given |
 | seaweedfs | 224 | measured 78 MiB idle |
 | qdrant | 1024 | measured 40 MiB idle with empty storage; sized for real collections |
 | fault-stub | 64 | given, profile only |
 | seaweedfs-init | 32 | one-shot |
-| **Total** | **9536** | budget 14336, spare 4800 |
+| **Total** | **9792** | budget 14336, spare 4544 |
 
 The measured rows are idle numbers from before Langfuse and the gateway existed. The
 post-deploy `stats` phase replaces every estimate with a measurement.

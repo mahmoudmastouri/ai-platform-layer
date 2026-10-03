@@ -344,7 +344,8 @@ services:
     image: ghcr.io/berriai/litellm:v1.102.1@sha256:87f34979b9f8cb274fac90ca8a4fdda07d8480de22755562a26adeb95ce20d02
     container_name: ai-platform-litellm
     restart: unless-stopped
-    mem_limit: 768m
+    # Measured 490 MiB of 768 MiB at idle on 2026-10-03, before any traffic (ADR-022).
+    mem_limit: 1024m
     command:
       - --config
       - /etc/litellm/config.yaml
@@ -358,6 +359,10 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
       # No .env loading inside the container, admin UI off, no API docs pages.
       LITELLM_MODE: PRODUCTION
+      # Upstream errors and fallback events go to stdout as JSON, for `docker logs`.
+      # Callbacks stay empty: the application's Langfuse SDK is the only tracer.
+      LITELLM_LOG: INFO
+      JSON_LOGS: "True"
       DISABLE_ADMIN_UI: "true"
       NO_DOCS: "true"
       NO_REDOC: "true"
@@ -386,10 +391,13 @@ services:
     logging: *default-logging
 
   # Fault injection for the gateway fallback tests. Only runs under
-  # `docker compose --profile faults up -d`. Two paths, both answered for any
-  # sub-path (LiteLLM appends /chat/completions):
-  #   /timeout  sleeps 120 s, past the 5 s deployment timeout
-  #   /5xx      returns HTTP 503 at once
+  # `docker compose --profile faults up -d`. The mode is the FIRST path segment, and
+  # everything after it is accepted on any method, because each provider handler
+  # appends its own route to api_base (/chat/completions for OpenAI, /v1/messages
+  # for Anthropic):
+  #   /timeout/...  sleeps 120 s, past the 5 s deployment timeout
+  #   /5xx/...      returns HTTP 503 with a small JSON error body at once
+  #   /healthz      200, for the container healthcheck
   fault-stub:
     profiles: ["faults"]
     image: python:3.13.15-slim
@@ -413,22 +421,24 @@ services:
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
-                self.wfile.write(data)
+                if self.command != "HEAD":
+                    self.wfile.write(data)
 
             def _handle(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 if length:
                     self.rfile.read(length)
-                if self.path.startswith("/healthz"):
+                mode = self.path.split("?", 1)[0].lstrip("/").split("/", 1)[0]
+                if mode == "healthz":
                     return self._reply(200, {"status": "ok"})
-                if self.path.startswith("/timeout"):
+                if mode == "timeout":
                     time.sleep(120)
                     return self._reply(200, {"error": "slept past the client timeout"})
-                if self.path.startswith("/5xx"):
+                if mode == "5xx":
                     return self._reply(503, {"error": {"message": "fault stub: 503", "type": "service_unavailable", "code": 503}})
                 return self._reply(404, {"error": "unknown path"})
 
-            do_GET = do_POST = _handle
+            do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = do_HEAD = _handle
 
             def log_message(self, fmt, *args):
                 pass
